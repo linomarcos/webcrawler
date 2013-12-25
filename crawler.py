@@ -4,10 +4,12 @@ from sqlite3 import connect as sqlite_conn
 from sqlite3 import IntegrityError
 from bs4 import BeautifulSoup
 from urlparse import urlparse, urlunparse
+from collections import deque
 
 
 def clean_url(url):
-    pass
+    scheme, netloc, path, _, _, _ = urlparse(url)
+    return urlunparse((scheme, netloc, path, None, None, None))
 
 def get_links(base_url, raw_html):
     """
@@ -20,6 +22,8 @@ def get_links(base_url, raw_html):
     base_scheme, base_netloc, _, _, _, _ = urlparse(base_url)
     parsed = BeautifulSoup(raw_html)
     links = set()
+    if not parsed.body:
+        return links
     for link in parsed.body.find_all('a'):
         scheme, netloc, path, _, _, _, = urlparse(link.get('href', ''))
         if scheme and netloc:
@@ -74,11 +78,69 @@ class Crawler(object):
             logging.debug('%s (%d, %d)', ie, tail_id, head_id)
 
     def is_marked(self, node_id):
-        pass
+        """
+        @param node_id [int]
+        @return [bool]: 'is_visited is not NULL' for corresponding node id.
+        """
+        cursor = self.conn.cursor()
+        cursor.execute('select is_visited from nodes where id=?', (node_id,))
+        record = cursor.fetchone() or (None,)
+        return (record[0] is not None)
 
     def do_mark(self, node_id, value):
-        pass
+        """
+        Updates the 'is_visited' field for the node id with the (string) value.
+        """
+        cursor = self.conn.cursor()
+        cursor.execute('update nodes set is_visited=? where id=?',
+                       (str(value), node_id))
 
-    def fetch(self, seed_list):
-        pass
+    def fetch(self, seed_list, max_depth=2):
+        queue = deque([(clean_url(url), 0) for url in seed_list])
+        while len(queue) > 0:
+            (url, depth) = queue.popleft()
+            url_id = self.get_node_id(url)
+            if self.is_marked(url_id) or (depth > max_depth):
+                continue
+            resp = requests.get(url)
+            self.do_mark(url_id, depth)
+            if not resp.ok:
+                continue
+            for outlink in get_links(url, resp.text):
+                out_id = self.get_node_id(outlink)
+                self.add_edge(url_id, out_id)
+                queue.append((outlink, depth + 1))
+
+
+USAGE ="""
+./crawler.py <sqlitedb> <seed_list> [max_depth]
+
+- sqlitedb    file name of initialized SQLite database
+- seed_list   file name of initial URLs, one per line
+- max_depth   number of levels to extend breadth-first-search. [default=2]
+"""
+
+LOGGING_CONFIG = {
+    'format': '%(asctime)s %(levelname)s  %(message)s',
+    'level': logging.INFO,
+}
+
+if __name__ == '__main__':
+    import sys
+    if len(sys.argv) < 3:
+        print USAGE
+        sys.exit(0)
+
+    logging.basicConfig(**LOGGING_CONFIG)
+
+    logging.info('reading list from %s', sys.argv[2])
+    seed_list = [line.strip() for line in open(sys.argv[2])]
+
+    max_depth = 2
+    if len(sys.argv) > 3:
+        max_depth = int(sys.argv[3])
+        logging.info('using max_depth %d', max_depth)
+
+    crawler = Crawler(sys.argv[1])
+    crawler.fetch(seed_list, max_depth)
 
