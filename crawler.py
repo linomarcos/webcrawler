@@ -2,13 +2,33 @@ import logging
 import requests
 from sqlite3 import connect as sqlite_conn
 from sqlite3 import IntegrityError
+from bs4 import BeautifulSoup
+from urlparse import urlparse, urlunparse
 
 
 def clean_url(url):
     pass
 
 def get_links(base_url, raw_html):
-    pass
+    """
+    Returns the set of URLs from the body element of HTML.
+
+    @param base_url [str]: for page being parsed,
+    @param raw_html [str]: for page being parsed
+    @return
+    """
+    base_scheme, base_netloc, _, _, _, _ = urlparse(base_url)
+    parsed = BeautifulSoup(raw_html)
+    links = set()
+    for link in parsed.body.find_all('a'):
+        scheme, netloc, path, _, _, _, = urlparse(link.get('href', ''))
+        if scheme and netloc:
+            links.add(urlunparse((scheme, netloc, path, None, None, None)))
+        elif path:
+            links.add(urlunparse((base_scheme, base_netloc, path, None, None, None)))
+
+    return links
+
 
 class Crawler(object):
     """
