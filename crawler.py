@@ -1,7 +1,9 @@
 import logging
 import requests
+from requests.exceptions import RequestException
 from sqlite3 import connect as sqlite_conn
 from sqlite3 import IntegrityError
+from ssl import SSLException
 from bs4 import BeautifulSoup
 from urlparse import urlparse, urlunparse
 from collections import deque
@@ -35,6 +37,8 @@ def get_links(base_url, raw_html):
 
 
 class Crawler(object):
+    TIMEOUT = 5  # seconds
+
     """
     Basic web-graph crawler: fetches pages and persists the link-graph structure
     of their URLS in a relational database.
@@ -102,14 +106,17 @@ class Crawler(object):
             url_id = self.get_node_id(url)
             if self.is_marked(url_id) or (depth > max_depth):
                 continue
-            resp = requests.get(url)
             self.do_mark(url_id, depth)
-            if not resp.ok:
-                continue
-            for outlink in get_links(url, resp.text):
-                out_id = self.get_node_id(outlink)
-                self.add_edge(url_id, out_id)
-                queue.append((outlink, depth + 1))
+            try:
+                resp = requests.get(url, timeout=self.TIMEOUT)
+                if not resp.ok:
+                    continue
+                for outlink in get_links(url, resp.text):
+                    out_id = self.get_node_id(outlink)
+                    self.add_edge(url_id, out_id)
+                    queue.append((outlink, depth + 1))
+            except (RequestException, SSLException), ex:
+                logging.info('%s %s', url, ex)
 
 
 USAGE ="""
