@@ -3,7 +3,7 @@ import requests
 from requests.exceptions import RequestException
 from sqlite3 import connect as sqlite_conn
 from sqlite3 import IntegrityError
-from ssl import SSLException
+from ssl import SSLError
 from bs4 import BeautifulSoup
 from urlparse import urlparse, urlunparse
 from collections import deque
@@ -115,7 +115,7 @@ class Crawler(object):
                     out_id = self.get_node_id(outlink)
                     self.add_edge(url_id, out_id)
                     queue.append((outlink, depth + 1))
-            except (RequestException, SSLException), ex:
+            except (RequestException, SSLError), ex:
                 logging.info('%s %s', url, ex)
 
 
