@@ -1,3 +1,4 @@
+import re
 import logging
 import requests
 from requests.exceptions import RequestException
@@ -26,11 +27,14 @@ def get_links(base_url, raw_html):
     links = set()
     if not parsed.body:
         return links
+    is_http_link = re.compile(r'^http')
     for link in parsed.body.find_all('a'):
         scheme, netloc, path, _, _, _, = urlparse(link.get('href', ''))
-        if scheme and netloc:
+        if scheme and not is_http_link.match(scheme):
+            continue
+        if scheme and netloc:  # full link as href
             links.add(urlunparse((scheme, netloc, path, None, None, None)))
-        elif path:
+        elif path:  # relative link as href
             links.add(urlunparse((base_scheme, base_netloc, path, None, None, None)))
 
     return links
