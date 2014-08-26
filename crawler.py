@@ -1,132 +1,96 @@
 import re
 import logging
 import requests
-from requests.exceptions import RequestException
-from sqlite3 import connect as sqlite_conn
-from sqlite3 import IntegrityError
-from ssl import SSLError
 from bs4 import BeautifulSoup
-from urlparse import urlparse, urlunparse
+from urlparse import urlsplit, urlunsplit
 from collections import deque
 
+requests_logger = logging.getLogger('requests')
+requests_logger.setLevel(logging.WARN)
 
-def clean_url(url):
-    scheme, netloc, path, _, _, _ = urlparse(url)
-    return urlunparse((scheme, netloc, path, None, None, None))
-
-def get_links(base_url, raw_html):
+def get_clean_url(target_url, base_url=None):
+    """Strips all query parameters and fragements from `target_url`, and tries
+    to convert relative paths to absolute if `base_url` is provided.
     """
-    Returns the set of URLs from the body element of HTML.
+    cleaned = None
+    scheme, netloc, path, _, _ = urlsplit(target_url)
+    # ignore non-HTTP links
+    if scheme and not re.match(r'^http', scheme):
+        return None
+    # prefer absolute paths
+    if scheme and netloc:
+        cleaned = urlunsplit((scheme, netloc, path, None, None))
+    # otherwise try to create an absolute path
+    if base_url and path:
+        base_scheme, base_netloc, _, _, _ = urlsplit(base_url)
+        cleaned = urlunsplit((base_scheme, base_netloc, path, None, None))
 
-    @param base_url [str]: for page being parsed,
-    @param raw_html [str]: for page being parsed
-    @return
+    return cleaned
+
+def get_outbound_urls(src_url, timeout=4):
+    """Returns the set of (absolute) outbound urls from a source document.
     """
-    base_scheme, base_netloc, _, _, _, _ = urlparse(base_url)
-    parsed = BeautifulSoup(raw_html)
-    links = set()
-    if not parsed.body:
-        return links
-    is_http_link = re.compile(r'^http')
-    for link in parsed.body.find_all('a'):
-        scheme, netloc, path, _, _, _, = urlparse(link.get('href', ''))
-        if scheme and not is_http_link.match(scheme):
-            continue
-        if scheme and netloc:  # full link as href
-            links.add(urlunparse((scheme, netloc, path, None, None, None)))
-        elif path:  # relative link as href
-            links.add(urlunparse((base_scheme, base_netloc, path, None, None, None)))
+    outbound_urls = set()
+    try:
+        head = requests.head(src_url, timeout=timeout)
+        if (head.status_code != 200 or
+            head.headers.get('content-type').find('html') == -1):
+            return []
+        logging.info('fetching %s', src_url)
+        resp = requests.get(src_url, timeout=timeout)
+        parsed = BeautifulSoup(resp.text)
+        if not parsed.body:
+            return []
+        for link in parsed.body.find_all('a'):
+            if not link.get('href'):
+                continue
+            target_url = get_clean_url(link.get('href'), src_url)
+            if target_url:
+                outbound_urls.add(target_url)
+    except Exception as ex:
+        logging.warning('[%s] %s', src_url, ex)
 
-    return links
+    return list(outbound_urls)
 
 
 class Crawler(object):
-    TIMEOUT = 5  # seconds
-
+    """Basic web-graph crawler: fetches pages and assembles the link graph.
     """
-    Basic web-graph crawler: fetches pages and persists the link-graph structure
-    of their URLS in a relational database.
-    """
-    def __init__(self, sqlitedb):
-        self.conn = sqlite_conn(sqlitedb)
-        self.conn.isolation_level = None
-        # <http://www.sqlite.org/foreignkeys.html#fk_enable>
-        cursor = self.conn.cursor()
-        cursor.execute('PRAGMA foreign_keys = ON')
-        logging.info('Connected to %s', sqlitedb)
+    def __init__(self):
+        self._index = {}
+        self._edges = []
 
-    def get_node_id(self, url):
+    def _get_index(self, url):
+        """Returns the index of the node in the adjacency representation.
+        If the node is not present, an entry is added to the index and an
+        entry is allocated for its adjacent edges.
         """
-        Maintains 'URL -> id' map. Inserts a node in the table if not present.
+        if url not in self._index:
+            self._index[url] = len(self._index)
+            self._edges.append(None)
+        return self._index[url]
 
-        @param url [str]
-        @return id [int]
-        """
-        cursor = self.conn.cursor()
-        cursor.execute('select id from nodes where url=?', (url,))
-        record = cursor.fetchone()
-        if not record:
-            cursor.execute('insert into nodes (url) values (?)', (url,))
-            cursor.execute('select id from nodes where url=?', (url,))
-            record = cursor.fetchone()
-        (node_id,) = record
-        return node_id
-
-    def add_edge(self, tail_id, head_id):
-        """
-        Adds an edge 'tail -> head' to the table.
-
-        @param tail_id, head_id [int]: values from L{get_node_id} method.
-        """
-        cursor = self.conn.cursor()
-        try:
-            cursor.execute('insert into edges (head_id, tail_id) values (?, ?)',
-                           (head_id, tail_id))
-        except IntegrityError, ie:
-            logging.debug('%s (%d, %d)', ie, tail_id, head_id)
-
-    def is_marked(self, node_id):
-        """
-        @param node_id [int]
-        @return [bool]: 'is_visited is not NULL' for corresponding node id.
-        """
-        cursor = self.conn.cursor()
-        cursor.execute('select is_visited from nodes where id=?', (node_id,))
-        record = cursor.fetchone() or (None,)
-        return (record[0] is not None)
-
-    def do_mark(self, node_id, value):
-        """
-        Updates the 'is_visited' field for the node id with the (string) value.
-        """
-        cursor = self.conn.cursor()
-        cursor.execute('update nodes set is_visited=? where id=?',
-                       (str(value), node_id))
-
-    def fetch(self, seed_list, max_depth=2):
-        queue = deque([(clean_url(url), 0) for url in seed_list])
+    def crawl(self, seed_list, max_depth=2):
+        queue = deque([(url, 0) for url in seed_list])
         while len(queue) > 0:
             (url, depth) = queue.popleft()
-            url_id = self.get_node_id(url)
-            if self.is_marked(url_id) or (depth > max_depth):
+            if (depth > max_depth) or (self.is_visited(url)):
                 continue
-            self.do_mark(url_id, depth)
-            try:
-                resp = requests.get(url, timeout=self.TIMEOUT)
-                if not resp.ok:
-                    continue
-                for outlink in get_links(url, resp.text):
-                    out_id = self.get_node_id(outlink)
-                    self.add_edge(url_id, out_id)
-                    queue.append((outlink, depth + 1))
-            except (RequestException, SSLError), ex:
-                logging.info('%s %s', url, ex)
+            outbound_urls = get_outbound_urls(url)
+            index = self._get_index(url)
+            self._edges[index] = map(self._get_index, outbound_urls)
+            for url in outbound_urls:
+                queue.append((url, depth+1))
+
+    def is_visited(self, url):
+        if url not in self._index:
+            return False
+        return (self._edges[self._get_index(url)] is not None)
 
 
 USAGE ="""
-./crawler.py <sqlitedb> <seed_list> [max_depth]
+./crawler.py <seed_list> [max_depth]
 
-- sqlitedb    file name of initialized SQLite database
 - seed_list   file name of initial URLs, one per line
 - max_depth   number of levels to extend breadth-first-search. [default=2]
 """
@@ -138,20 +102,28 @@ LOGGING_CONFIG = {
 
 if __name__ == '__main__':
     import sys
-    if len(sys.argv) < 3:
+    import json
+
+    if len(sys.argv) < 2:
         print USAGE
         sys.exit(0)
 
     logging.basicConfig(**LOGGING_CONFIG)
 
-    logging.info('reading list from %s', sys.argv[2])
-    seed_list = [line.strip() for line in open(sys.argv[2])]
+    logging.info('reading list from %s', sys.argv[1])
+    seed_list = [line.strip() for line in open(sys.argv[1])]
 
     max_depth = 2
-    if len(sys.argv) > 3:
-        max_depth = int(sys.argv[3])
+    if len(sys.argv) > 2:
+        max_depth = int(sys.argv[2])
         logging.info('using max_depth %d', max_depth)
 
-    crawler = Crawler(sys.argv[1])
-    crawler.fetch(seed_list, max_depth)
+    crawler = Crawler()
+    crawler.crawl(seed_list, max_depth)
 
+    filename = '%s.crawled.json' % sys.argv[1]
+    logging.info('writing %d nodes to %s', len(crawler._index), filename)
+    with open(filename, 'w') as fh:
+        representation = dict(index=crawler._index, edges=crawler._edges)
+        json.dump(representation, fh, indent=2)
+        fh.write('\n')
