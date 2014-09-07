@@ -31,6 +31,7 @@ LOGGING_CONFIG = None
 # Application definition
 
 INSTALLED_APPS = (
+    'webgraph',
 )
 
 MIDDLEWARE_CLASSES = (
