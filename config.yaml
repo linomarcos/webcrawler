@@ -1,0 +1,10 @@
+
+logging_config:
+    format: "%(asctime)s PID:%(process)d %(levelname)s %(message)s"
+    level: 20
+
+beanstalk_config:
+    host: "localhost"
+    port: 11300
+
+max_depth: 2
