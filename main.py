@@ -8,7 +8,7 @@ import logging
 import argparse
 import beanstalkc
 from crawler_node import CrawlerNode
-from webgraph.crawl_api import CrawlAPI
+from webgraph.webgraph_api import WebGraphAPI
 
 ROOT_PATH = os.path.dirname(__file__)
 DEFAULT_CONFIG = os.path.join(ROOT_PATH, 'config.yaml')
@@ -38,7 +38,7 @@ if __name__ == '__main__':
         seed_queue(config, args.seedfile)
 
     if args.crawl:
-        api = CrawlAPI()
+        api = WebGraphAPI()
         worker = CrawlerNode(api, args.config)
         worker.start()
 

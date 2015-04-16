@@ -3,7 +3,7 @@ import logging
 import requests
 from bs4 import BeautifulSoup
 from urlparse import urlsplit, urlunsplit
-from models import API as GraphAPI
+from models import API as ModelAPI
 
 requests_logger = logging.getLogger('requests')
 requests_logger.setLevel(logging.WARN)
@@ -48,22 +48,22 @@ def get_clean_url(href, base_url=None):
     return None
 
 
-class CrawlAPI(object):
-    """Interface object for `crawler_node.CrawlerNode`.
+class WebGraphAPI(object):
+    """Graph API interface for crawler_node.CrawlerNode.
     """
-    _graph_api = GraphAPI()
+    _model_api = ModelAPI()
 
     def is_visited(self, url):
-        return self._graph_api.is_visited(url)
+        return self._model_api.is_visited(url)
 
     def add_edge(self, url, outbound_link):
-        self._graph_api.add_edge(url, outbound_link['url'], text=outbound_link['text'])
+        self._model_api.add_edge(url, outbound_link['url'], text=outbound_link['text'])
 
     def adjacent_nodes(self, url):
         """Marks a node as "visited," and returns an _iterator_ of meta data for
         valid outbound links.
         """
-        self._graph_api.update_node(url, status=1)
+        self._model_api.update_node(url, status=1)
 
         parsed_html = load_page(url)
         if not parsed_html:
@@ -71,7 +71,7 @@ class CrawlAPI(object):
 
         title = parsed_html.title
         if title:
-            self._graph_api.update_node(url, title=title.get_text())
+            self._model_api.update_node(url, title=title.get_text())
 
         for link in parsed_html.body.find_all('a'):
             if not link.get('href'):
