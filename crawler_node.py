@@ -1,57 +1,58 @@
-import os
 import json
 import yaml
+import redis
 import logging
-import beanstalkc
 
-
-ROOT_PATH = os.path.dirname(__file__)
-DEFAULT_CONFIG = os.path.join(ROOT_PATH, 'config.yaml')
 
 class CrawlerNode(object):
-    """Implements logic for distributed Breadth-First Search.
-    """
-    CLIENT_TIMEOUT = 2
+    """Implements logic for distributed Breadth-First Search"""
 
-    def __init__(self, graph_api, config_file=DEFAULT_CONFIG):
+    QUEUE_NS = 'crawler:queue'
+    VISITED_NS = 'crawler:visited'
+
+    def __init__(self, config_file, graph_api):
         """
-        @param graph_api: interface to the data layer; see README for spec.
-        @param config_file: path/to/yaml-file with application wide settings.
+        @config_file: path/to/yaml-file with application settings.
+        @graph_api:   interface to the data layer; see README for spec.
         """
         self._graph_api = graph_api
 
         config = yaml.load(open(config_file))
-        logging.info('CrawlerNode: loaded %s', config_file)
 
-        beanstalk_config = config['beanstalk_config']
-        self._q_client = beanstalkc.Connection(**beanstalk_config)
-        logging.info('CrawlerNode connected: %s', beanstalk_config)
+        redis_config = config['redis_config']
+        self._redis = redis.StrictRedis(**redis_config)
+        logging.info('using Redis connection %s', redis_config)
 
-        self._max_depth = config['max_depth']
+    def enqueue(self, url, depth=0):
+        data = json.dumps(dict(url=url, depth=depth))
+        self._redis.rpush(self.QUEUE_NS, data)
 
-    def _get_new_job(self, last_job=None):
-        """Acknowledges the last_job as done and fetches a new job.
-        """
-        if last_job:
-            last_job.delete()
-        return self._q_client.reserve(timeout=self.CLIENT_TIMEOUT)
+    def _dequeue(self):
+        data = json.loads(self._redis.lpop(self.QUEUE_NS))
+        return data['url'], data['depth']
 
-    def start(self):
-        job = self._get_new_job()
-        while job:
-            params = json.loads(job.body)
-            if (params['depth'] > self._max_depth or
-                self._graph_api.is_visited(params['url'])):
+    def _has_next(self):
+        return self._redis.exists(self.QUEUE_NS)
 
-                job = self._get_new_job(job)
+    def _mark_visited(self, url):
+        self._redis.sadd(self.VISITED_NS, url)
+
+    def _is_visited(self, url):
+        return self._redis.sismember(self.VISITED_NS, url)
+
+    def reset(self):
+        """Drops current BFS state"""
+        logging.warn('dropping BFS state, queue depth = %d',
+                     self._redis.llen(self.QUEUE_NS))
+        self._redis.delete(self.QUEUE_NS, self.VISITED_NS)
+
+    def start(self, max_depth):
+        """Main entry point."""
+
+        while self._has_next():
+            url, depth = self._dequeue()
+            if depth > max_depth or self._is_visited(url):
                 continue
-
-            for link in self._graph_api.adjacent_nodes(params['url']):
-                self._graph_api.add_edge(params['url'], link)
-                new_params = {
-                    'url': link['url'],
-                    'depth': params['depth'] + 1,
-                }
-                self._q_client.put(json.dumps(new_params))
-
-            job = self._get_new_job(job)
+            self._mark_visited(url)
+            for new_url in self._graph_api.adjacent_nodes(url):
+                self.enqueue(new_url, depth + 1)

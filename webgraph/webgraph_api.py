@@ -1,85 +1,93 @@
-import re
+import os
+import json
 import logging
 import requests
+import urlparse
 from bs4 import BeautifulSoup
-from urlparse import urlsplit, urlunsplit
-from models import API as ModelAPI
 
-requests_logger = logging.getLogger('requests')
-requests_logger.setLevel(logging.WARN)
+logging.getLogger('requests').setLevel(logging.WARN)
 
-def load_page(url, timeout=2):
-    """Returns the parsed HTML of a page or `None` if the page cannot be loaded.
-    """
+def load_html(url, timeout=2):
+    """Returns the parsed HTML or `None` if the page cannot be loaded."""
     try:
-        head = requests.head(url, timeout=timeout)
-        if head.status_code != 200:
-            raise Exception('response status %d' % head.status_code)
-        if head.headers.get('content-type').lower().find('html') == -1:
-            raise Exception('not HTML content-type')
+        resp = requests.head(url, timeout=timeout)
+        resp.raise_for_status()
+
+        content_type = resp.headers.get('content-type')
+        if (content_type or '').lower().find('html') == -1:
+            raise Exception('content-type: %s', resp.headers)
 
         logging.info('fetching %s', url)
         resp = requests.get(url, timeout=timeout)
-        return BeautifulSoup(resp.text)
+        return BeautifulSoup(resp.text, 'html.parser')
 
     except Exception as ex:
         logging.warning('%s: %s', url, ex)
         return None
 
-def get_clean_url(href, base_url=None):
-    """Returns an absolute URL/path from an `href`, assuming a valid HTTP URL
-    can be created. If one cannot, `None` is returned.
-
-    @param base_url [str|None]: a base url from which to build the absolute path
-           if `href` is a relative path.
+def clean_url(srcurl, href):
+    """Returns the absolute path from a source page and HREF attribute,
+    stripping any query params and fragments.
     """
-    scheme, netloc, path, _, _ = urlsplit(href)
-
-    if scheme and not re.match(r'^http', scheme):
+    scheme, netloc, path, _, _ = urlparse.urlsplit(href)
+    if scheme and not scheme.startswith('http'):
         return None
 
     if scheme and netloc:
-        return urlunsplit((scheme, netloc, path, None, None))
+        return urlparse.urlunsplit((scheme, netloc, path, None, None))
 
-    if base_url and path:
-        base_scheme, base_netloc, _, _, _ = urlsplit(base_url)
-        return urlunsplit((base_scheme, base_netloc, path, None, None))
-
-    return None
+    srcscheme, srcloc, _, _, _ = urlparse.urlsplit(srcurl)
+    return urlparse.urlunsplit((srcscheme, srcloc, path, None, None))
 
 
 class WebGraphAPI(object):
-    """Graph API interface for crawler_node.CrawlerNode.
+    """PROOF OF CONCEPT for web-graph API.
+
+    Logs records for nodes and edges, one per line, in the schema
+
+        {"type": "node", "id": <int>, "label": <url>}
+        {"type": "edge", "source": <source id>, "target": <target id>}
     """
-    _model_api = ModelAPI()
 
-    def is_visited(self, url):
-        return self._model_api.is_visited(url)
+    def __init__(self):
 
-    def add_edge(self, url, outbound_link):
-        self._model_api.add_edge(url, outbound_link['url'], text=outbound_link['text'])
+        self._nodes = {}
+
+        logfile = 'data/webgraph.%s.jsonl' % os.getpid()
+        self._logout = open(logfile, 'w')
+        logging.info('logging graph structure to %s', logfile)
+
+    def node_id(self, url):
+        """SELECT/INSERT operator for node data"""
+
+        if url not in self._nodes:
+            # add node to table and write new record
+            self._nodes[url] = len(self._nodes)
+            record = dict(type='node', id=self._nodes[url], label=url)
+            self._logout.write('%s\n' % json.dumps(record))
+
+        return self._nodes[url]
+
+    def add_edge(self, srcurl, desturl):
+
+        record = {
+            'type': 'edge',
+            'source': self.node_id(srcurl),
+            'target': self.node_id(desturl),
+        }
+        self._logout.write('%s\n' % json.dumps(record))
 
     def adjacent_nodes(self, url):
-        """Marks a node as "visited," and returns an _iterator_ of meta data for
-        valid outbound links.
-        """
-        self._model_api.update_node(url, status=1)
+        """Returns a list of all out-links from the URL"""
 
-        parsed_html = load_page(url)
-        if not parsed_html:
-            return
+        html = load_html(url)
+        if not html or not html.body:
+            return []
 
-        title = parsed_html.title
-        if title:
-            self._model_api.update_node(url, title=title.get_text())
+        hrefs = filter(None, [elem.get('href') for elem in html.body.find_all('a')])
+        desturls = filter(None, [clean_url(url, href) for href in hrefs])
 
-        for link in parsed_html.body.find_all('a'):
-            if not link.get('href'):
-                continue
+        for desturl in desturls:
+            self.add_edge(url, desturl)
 
-            link_url = get_clean_url(link['href'], url)
-            if not link_url:
-                continue
-
-            yield dict(url=link_url, text=link.get_text())
-
+        return desturls
