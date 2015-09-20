@@ -6,7 +6,6 @@ import argparse
 from crawler_node import CrawlerNode
 from webgraph.webgraph_api import WebGraphAPI
 
-
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Webcrawler interface')
     parser.add_argument('--config', default='config.yaml', help='config file to use')
@@ -20,7 +19,8 @@ if __name__ == '__main__':
     config = yaml.load(open(args.config))
     logging.basicConfig(**config['logging_config'])
 
-    client = CrawlerNode(args.config, None)
+    redis_config = config['redis_config']
+    client = CrawlerNode(redis_config, None)
 
     if args.reset:
         client.reset()
@@ -29,8 +29,11 @@ if __name__ == '__main__':
         for url in open(args.seedfile):
             client.enqueue(url.strip())
 
+    import django
+    django.setup()
+
     if args.webgraph:
         api = WebGraphAPI()
-        client = CrawlerNode(args.config, api)
+        client = CrawlerNode(redis_config, api)
         client.start(args.webgraph)
 

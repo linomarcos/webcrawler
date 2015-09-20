@@ -10,16 +10,13 @@ class CrawlerNode(object):
     QUEUE_NS = 'crawler:queue'
     VISITED_NS = 'crawler:visited'
 
-    def __init__(self, config_file, graph_api):
+    def __init__(self, redis_config, graph_api):
         """
-        @config_file: path/to/yaml-file with application settings.
-        @graph_api:   interface to the data layer; see README for spec.
+        @redis_config: Redis client connection data
+        @graph_api:    interface to the data layer; see README for spec.
         """
         self._graph_api = graph_api
 
-        config = yaml.load(open(config_file))
-
-        redis_config = config['redis_config']
         self._redis = redis.StrictRedis(**redis_config)
         logging.info('using Redis connection %s', redis_config)
 

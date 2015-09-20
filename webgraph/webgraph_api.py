@@ -1,9 +1,10 @@
 import os
-import json
 import logging
 import requests
 import urlparse
 from bs4 import BeautifulSoup
+from webgraph.models import add_edge
+
 
 logging.getLogger('requests').setLevel(logging.WARN)
 
@@ -41,41 +42,11 @@ def clean_url(srcurl, href):
 
 
 class WebGraphAPI(object):
-    """PROOF OF CONCEPT for web-graph API.
+    """Interface to data layer for MVP webgraph crawler.
 
-    Logs records for nodes and edges, one per line, in the schema
-
-        {"type": "node", "id": <int>, "label": <url>}
-        {"type": "edge", "source": <source id>, "target": <target id>}
+    The main method exposed is @adjacent_nodes, which reads in a "task" from
+    the CrawlerNode, and emits a list of new tasks.
     """
-
-    def __init__(self):
-
-        self._nodes = {}
-
-        logfile = 'data/webgraph.%s.jsonl' % os.getpid()
-        self._logout = open(logfile, 'w')
-        logging.info('logging graph structure to %s', logfile)
-
-    def node_id(self, url):
-        """SELECT/INSERT operator for node data"""
-
-        if url not in self._nodes:
-            # add node to table and write new record
-            self._nodes[url] = len(self._nodes)
-            record = dict(type='node', id=self._nodes[url], label=url)
-            self._logout.write('%s\n' % json.dumps(record))
-
-        return self._nodes[url]
-
-    def add_edge(self, srcurl, desturl):
-
-        record = {
-            'type': 'edge',
-            'source': self.node_id(srcurl),
-            'target': self.node_id(desturl),
-        }
-        self._logout.write('%s\n' % json.dumps(record))
 
     def adjacent_nodes(self, url):
         """Returns a list of all out-links from the URL"""
@@ -88,6 +59,6 @@ class WebGraphAPI(object):
         desturls = filter(None, [clean_url(url, href) for href in hrefs])
 
         for desturl in desturls:
-            self.add_edge(url, desturl)
+            add_edge(url, desturl)
 
         return desturls
